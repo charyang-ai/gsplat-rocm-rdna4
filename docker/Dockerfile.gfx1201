@@ -1,0 +1,121 @@
+# ============================================================
+# gsplat ROCm gfx1201 native image
+#
+# Target:
+#   AMD Radeon AI PRO R9700
+#   RDNA4 gfx1201
+#
+# ROCm:
+#   7.2.1
+#
+# PyTorch:
+#   2.9.1 ROCm
+#
+# Features:
+#   - HIP native build
+#   - gfx1201 kernel compilation
+#   - simple_trainer support
+#   - fused_ssim replacement
+#
+# ============================================================
+
+
+FROM rocm/pytorch:rocm7.2.1_ubuntu24.04_py3.12_pytorch_release_2.9.1
+
+
+ARG GSPLAT_REF=6392bd8
+ARG GPU_ARCH=gfx1201
+ARG MAX_JOBS=16
+
+
+ENV GPU_ARCHS=${GPU_ARCH}
+ENV PYTORCH_ROCM_ARCH=${GPU_ARCH}
+ENV MAX_JOBS=${MAX_JOBS}
+
+
+# ------------------------------------------------------------
+# build dependencies
+# ------------------------------------------------------------
+
+RUN apt-get update && apt-get install -y \
+    git \
+    ninja-build \
+    cmake \
+    build-essential \
+    && rm -rf /var/lib/apt/lists/*
+
+
+RUN git config --global --add safe.directory '*'
+
+
+# ------------------------------------------------------------
+# clone ROCm gsplat fork
+# ------------------------------------------------------------
+
+WORKDIR /opt
+
+RUN git clone https://github.com/ROCm/gsplat.git
+
+WORKDIR /opt/gsplat
+
+RUN git checkout ${GSPLAT_REF} && \
+    git submodule update --init --recursive
+
+
+
+# ------------------------------------------------------------
+# gfx1201 build configuration
+# ------------------------------------------------------------
+
+ENV TORCH_CUDA_ARCH_LIST=""
+ENV HIP_ARCHITECTURES=${GPU_ARCH}
+
+
+# ------------------------------------------------------------
+# build gsplat HIP extension
+# ------------------------------------------------------------
+
+RUN pip install --no-build-isolation -e .
+
+
+# ------------------------------------------------------------
+# trainer dependencies
+# ------------------------------------------------------------
+
+RUN pip install --no-cache-dir \
+    -r examples/requirements.txt
+
+
+# ------------------------------------------------------------
+# ROCm replacement of CUDA fused_ssim
+# ------------------------------------------------------------
+
+COPY shims/fused_ssim.py \
+     /opt/venv/lib/python3.12/site-packages/fused_ssim.py
+
+
+
+# ------------------------------------------------------------
+# sanity test
+# ------------------------------------------------------------
+
+COPY tests/smoke_test.py /opt/gsplat/smoke_test.py
+
+
+RUN python - <<EOF
+import torch
+import gsplat
+
+print("Torch:", torch.__version__)
+print("HIP:", torch.version.hip)
+print("GPU available:", torch.cuda.is_available())
+print("gsplat:", gsplat.__file__)
+EOF
+
+
+
+CMD [
+"python",
+"examples/simple_trainer.py",
+"--help"
+]
