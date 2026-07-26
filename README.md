@@ -2,6 +2,28 @@
 
 ## Native 3D Gaussian Splatting Training on AMD Radeon AI PRO R9700
 
+### Build & Run your docker
+```
+docker build -f Dockerfile.gfx1201  -t gsplat-rocm:gfx1201-rocm72  .
+
+sudo docker run --rm -it \
+  --name gsplat-dev \
+  --device=/dev/kfd \
+  --device=/dev/dri \
+  --group-add video \
+  --group-add render \
+  --ipc=host \
+  --network=host \
+  --shm-size=16g \
+  -v ~/datasets:/datasets \
+  -v ~/gsplat-workspace:/home/$(whoami) \
+  -w /opt/gsplat \
+  -e HSA_OVERRIDE_GFX_VERSION=12.0.1 \
+  gsplat-rocm:gfx1201-rocm72 \
+  /bin/bash
+```
+
+
 ### Check you platform
 ```
 cd /opt/gsplat
@@ -28,20 +50,7 @@ gsplat: /opt/gsplat/gsplat/__init__.py
 ```
 
 
-### Run your docker
-```
-sudo docker run --rm -it \
-  --privileged \
-  --network=host \
-  --ipc=host \
-  --device=/dev/kfd \
-  --device=/dev/dri \
-  --group-add video \
-  -v /home/charyang/datasets:/datasets \
-  -w /opt/gsplat \
-  warrenrross/gsplat-rocm:gfx1151-rocm72-trainer \
-  /bin/bash
-```
+
 
 ### Training your 3D GS with below commands:
 ```
