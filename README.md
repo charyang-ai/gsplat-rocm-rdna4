@@ -16,7 +16,7 @@ on wave32 RDNA4 hardware.
 
 ## Why this project
 
-The ROCm gsplat fork was written for **CDNA (gfx9, wave64)** data-center GPUs. On a
+The ROCm gsplat fork was written for **CDNA (gfx942, wave64)** data-center GPUs. On a
 consumer/pro **RDNA4 (gfx1201, wave32)** card it fails in three ways that this repo
 fixes at build time:
 
@@ -153,12 +153,12 @@ render on the R9700**.
 <p align="center">
   <img src="assets/val_step6999_0006.png" alt="Validation at step 7000 (view 0006)" width="90%">
   <img src="assets/val_step6999_0015.png" alt="Validation at step 7000 (view 0015)" width="90%">
-  <img src="assets/val_step6999_0016.png" alt="Validation at step 7000 (view 0016)" width="90%">
 </p>
 
 **Step 30,000** (final)
 
 <p align="center">
+  <img src="assets/val_step29999_0006.png" alt="Validation at step 30000 (view 0006)" width="90%">
   <img src="assets/val_step29999_0012.png" alt="Validation at step 30000 (view 0012)" width="90%">
 </p>
 
