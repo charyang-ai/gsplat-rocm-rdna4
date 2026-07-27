@@ -23,14 +23,13 @@
 FROM rocm/pytorch:rocm7.2.1_ubuntu24.04_py3.12_pytorch_release_2.9.1
 
 
-ARG GSPLAT_REF=6392bd8
+ARG GSPLAT_REF=b01acd43e3c7fa942f95fda0974e9125e4de7395
 ARG GPU_ARCH=gfx1201
-ARG MAX_JOBS=16
+ARG MAX_JOBS=8
 
-
-ENV GPU_ARCHS=${GPU_ARCH}
-ENV PYTORCH_ROCM_ARCH=${GPU_ARCH}
-ENV MAX_JOBS=${MAX_JOBS}
+ENV GPU_ARCHS=${GPU_ARCH} \
+    PYTORCH_ROCM_ARCH=${GPU_ARCH} \
+    MAX_JOBS=${MAX_JOBS}
 
 
 # ------------------------------------------------------------
@@ -42,6 +41,7 @@ RUN apt-get update && apt-get install -y \
     ninja-build \
     cmake \
     build-essential \
+    libglm-dev \
     && rm -rf /var/lib/apt/lists/*
 
 
@@ -51,17 +51,13 @@ RUN git config --global --add safe.directory '*'
 # ------------------------------------------------------------
 # clone ROCm gsplat fork
 # ------------------------------------------------------------
+# Clone the ROCm fork (with the vendored glm submodule) at the pinned ref.
+RUN git clone https://github.com/ROCm/gsplat /opt/gsplat \
+    && cd /opt/gsplat \
+    && git checkout ${GSPLAT_REF} \
+    && git submodule update --init --recursive
 
-WORKDIR /opt
-
-RUN git clone https://github.com/ROCm/gsplat.git
-
-WORKDIR /opt/gsplat
-
-RUN git checkout ${GSPLAT_REF} && \
-    git submodule update --init --recursive
-
-
+    WORKDIR /opt/gsplat
 
 # ------------------------------------------------------------
 # gfx1201 build configuration
@@ -70,28 +66,39 @@ RUN git checkout ${GSPLAT_REF} && \
 ENV TORCH_CUDA_ARCH_LIST=""
 ENV HIP_ARCHITECTURES=${GPU_ARCH}
 
+COPY patches/setup.py.gfx1201.patch /tmp/setup.py.gfx1201.patch
+RUN git apply --verbose /tmp/setup.py.gfx1201.patch
+
+COPY patches/wave_size.gfx1201.patch /tmp/wave_size.gfx1201.patch
+RUN git apply --verbose /tmp/wave_size.gfx1201.patch
 
 # ------------------------------------------------------------
 # build gsplat HIP extension
 # ------------------------------------------------------------
+RUN pip install --no-build-isolation -e . 2>&1 | tail -8 \
+    || echo "pass1 expected-fail (glm .inl missing after hipify)"; \
+  cp -rf gsplat/cuda/csrc/third_party/glm/. gsplat/hip/csrc/third_party/glm/; \
+  pip install --no-build-isolation -e . 2>&1 | tail -8
 
-RUN pip install --no-build-isolation -e .
+COPY tests/smoke_test.py /opt/gsplat/smoke_test.py
+
+COPY tests/correctness_test.py /opt/gsplat/correctness_test.py
+
+RUN test -f /opt/gsplat/gsplat/csrc.so && python /opt/gsplat/smoke_test.py import
 
 
 # ------------------------------------------------------------
 # trainer dependencies
 # ------------------------------------------------------------
 
-RUN pip install --no-cache-dir \
-    -r examples/requirements.txt
+RUN pip install --no-cache-dir -r examples/requirements.txt
 
 
 # ------------------------------------------------------------
 # ROCm replacement of CUDA fused_ssim
 # ------------------------------------------------------------
 
-COPY shims/fused_ssim.py \
-     /opt/venv/lib/python3.12/site-packages/fused_ssim.py
+COPY shims/fused_ssim.py /opt/venv/lib/python3.12/site-packages/fused_ssim.py
 
 
 
@@ -99,7 +106,9 @@ COPY shims/fused_ssim.py \
 # sanity test
 # ------------------------------------------------------------
 
-COPY tests/smoke_test.py /opt/gsplat/smoke_test.py
+# Build-time sanity (no GPU op): every trainer import resolves.
+RUN python -c "import torch, torchvision, torchmetrics, pycolmap, tyro, imageio, cv2, \
+nerfview, viser, fused_ssim; print('TRAINER DEPS OK', torch.__version__, torch.version.hip)"
 
 
 RUN python - <<EOF
@@ -114,8 +123,4 @@ EOF
 
 
 
-CMD [
-"python",
-"examples/simple_trainer.py",
-"--help"
-]
+CMD ["python", "/opt/gsplat/smoke_test.py", "rasterize"]
