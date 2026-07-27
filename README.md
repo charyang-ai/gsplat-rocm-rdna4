@@ -37,6 +37,7 @@ numerical correctness test against the fork's PyTorch reference.
 - ROCm **7.2.1** + PyTorch **2.9.1** base image
 - wave32-correct kernels (guarded `WARP_SIZE` patch)
 - `examples/simple_trainer.py` support (full 3DGS training + benchmark)
+- **Multi-GPU training** (tested on 8× R9700, NCCL/RCCL backend, no `torchrun` needed)
 - Pure-torch `fused_ssim` drop-in (upstream CUDA extension does not build on ROCm)
 - Smoke test + numerical correctness test baked into the image
 
@@ -140,6 +141,68 @@ HIP_VISIBLE_DEVICES=0 ROCR_VISIBLE_DEVICES=0 CUDA_VISIBLE_DEVICES=0 python examp
 > `--save_ply` exports the final Gaussians when training finishes to
 > `<result_dir>/ply/point_cloud_<step>.ply` (e.g.
 > `./results/r9700_test/ply/point_cloud_29999.ply` with the default 30k steps).
+
+## 6. Multi-GPU (8×) training
+
+The trainer scales to multiple GPUs out of the box — no `torchrun` needed. Internally
+`gsplat.distributed.cli` reads `torch.cuda.device_count()` and spawns one process per
+visible GPU (NCCL/RCCL backend), so you control the number of GPUs purely through the
+`*_VISIBLE_DEVICES` env vars.
+
+Expose all 8 GPUs to the container (note the larger `--shm-size` — the multiprocess
+spawn + DataLoader workers need it):
+
+```bash
+sudo docker run --rm -it \
+  --name gsplat-8gpu \
+  --device=/dev/kfd \
+  --device=/dev/dri \
+  --group-add video --group-add render \
+  --ipc=host --network=host \
+  --shm-size=64g \
+  -v ~/datasets:/datasets \
+  -v ~/workspace:/home/$(whoami) \
+  -w /opt/gsplat \
+  -e HSA_OVERRIDE_GFX_VERSION=12.0.1 \
+  gsplat-rocm:gfx1201-rocm72 \
+  /bin/bash
+```
+
+Confirm all 8 cards are visible, then launch training on 8 GPUs:
+
+```bash
+cd /opt/gsplat
+
+# sanity: should print 8
+python -c "import torch; print('device_count =', torch.cuda.device_count())"
+
+HIP_VISIBLE_DEVICES=0,1,2,3,4,5,6,7 ROCR_VISIBLE_DEVICES=0,1,2,3,4,5,6,7 CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7 \
+python examples/simple_trainer.py default \
+  --data_dir /datasets/bicycle \
+  --data_factor 8 \
+  --result_dir ./results/r9700_8gpu \
+  --steps_scaler 0.125 \
+  --save_ply \
+  --disable-viewer
+```
+
+> The effective batch is `batch_size × world_size`, so `--steps_scaler 0.125` keeps the
+> total training work comparable to a single-GPU 30k-step run. On exit, ranks are merged
+> into `<result_dir>/ply/point_cloud_<max>_distributed_merged.ply`.
+
+Verify all 8 GPUs are actually saturated with `rocm-smi` (`watch -n 1 rocm-smi`) — here
+all 8 report **GPU% = 100%** during a training run on the R9700:
+
+<p align="center">
+  <img src="assets/8cards.png" alt="8× AMD Radeon AI PRO R9700 at 100% GPU during gsplat training" width="95%">
+</p>
+
+**Tips for 8-GPU runs on ROCm:**
+- Multi-GPU comms go through **RCCL**. If init stalls, set `NCCL_DEBUG=INFO`; on
+  PCIe-only topologies (no XGMI) try `NCCL_P2P_DISABLE=1`.
+- Do **not** use `torchrun` for single-node runs — it conflicts with the internal
+  `mp.spawn`. (Multi-node uses the built-in OpenMPI path via `OMPI_COMM_WORLD_*`.)
+- A too-small `/dev/shm` crashes the spawned workers — hence `--shm-size=64g` above.
 
 ---
 
