@@ -1,6 +1,6 @@
 # GSplat-ROCm-RDNA4
 
-## Native 3D Gaussian Splatting Training on AMD Radeon AI PRO R9700
+## Native 3D Gaussian Splatting Training on AMD RDNA4 (gfx1201)
 
 Run the official [gsplat](https://github.com/nerfstudio-project/gsplat) 3D Gaussian
 Splatting trainer **natively on AMD RDNA4 (gfx1201)** GPUs — no CUDA, no ZLUDA,
@@ -8,8 +8,12 @@ no translation layers. This repo packages the [ROCm gsplat fork](https://github.
 into a reproducible Docker image with the fixes needed to build and run correctly
 on wave32 RDNA4 hardware.
 
+Works on **any gfx1201 / RDNA4 Radeon card**, including the **Radeon RX 9070 / RX 9070 XT**
+and the **Radeon AI PRO R9700** (the card used for the results below). Any GPU that
+reports `gfx1201` should build and run with the same image.
+
 <p align="center">
-  <img src="assets/training.gif" alt="Training gsplat on AMD Radeon AI PRO R9700" width="80%">
+  <video src="assets/training.mp4" controls width="80%"></video>
 </p>
 
 ---
@@ -47,7 +51,7 @@ numerical correctness test against the fork's PyTorch reference.
 
 | | |
 |---|---|
-| **GPU** | AMD RDNA4, gfx1201 (e.g. Radeon AI PRO R9700) |
+| **GPU** | Any AMD RDNA4 / gfx1201 card — e.g. Radeon RX 9070, RX 9070 XT, Radeon AI PRO R9700 |
 | **Driver / ROCm** | ROCm 7.2.1-compatible kernel + `amdgpu` driver, `/dev/kfd` + `/dev/dri` accessible |
 | **Host** | Linux with Docker (BuildKit) |
 
