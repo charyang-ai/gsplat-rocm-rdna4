@@ -46,6 +46,10 @@ FROM rocm/pytorch:rocm7.2.1_ubuntu24.04_py3.12_pytorch_release_2.9.1
 ARG GSPLAT_REF=b01acd43e3c7fa942f95fda0974e9125e4de7395
 ARG GPU_ARCH=gfx1201
 ARG MAX_JOBS=8
+# TriSSIM (Triton-based fused SSIM loss) replaces the CUDA-only upstream fused_ssim.
+# Pinned to a mutable branch by default; pass --build-arg TRISSIM_REF=<commit> for a
+# fully reproducible build.
+ARG TRISSIM_REF=main
 
 # PYTORCH_ROCM_ARCH is the one the patched setup.py reads to pick --offload-arch;
 # GPU_ARCHS mirrors it for tools that expect that name; MAX_JOBS caps the ninja
@@ -135,6 +139,11 @@ COPY tests/smoke_test.py /opt/gsplat/smoke_test.py
 #   docker run ... gsplat-rocm:gfx1201-rocm72 python /opt/gsplat/correctness_test.py
 COPY tests/correctness_test.py /opt/gsplat/correctness_test.py
 
+# TriSSIM fused-SSIM perf/correctness benchmark (run on the GPU post-build; needs the
+# fused_ssim_biauto package installed further below). Run with:
+#   docker run ... gsplat-rocm:gfx1201-rocm72 python /opt/gsplat/perf_fused_ssim.py
+COPY tests/perf_fused_ssim.py /opt/gsplat/perf_fused_ssim.py
+
 # Build-time verification (no GPU op): the .so linked and the package imports.
 RUN test -f /opt/gsplat/gsplat/csrc.so && python /opt/gsplat/smoke_test.py import
 
@@ -149,12 +158,33 @@ RUN pip install --no-cache-dir -r examples/requirements.txt
 
 
 # ------------------------------------------------------------
-# ROCm replacement of CUDA fused_ssim
+# ROCm replacement of CUDA fused_ssim  (TriSSIM)
 # ------------------------------------------------------------
-# Upstream fused_ssim ships as a CUDA extension that does NOT build on ROCm. Drop
-# in a pure-torch standard-SSIM shim as a top-level module so
-# `from fused_ssim import fused_ssim` resolves with no PYTHONPATH wiring.
-COPY shims/fused_ssim.py /opt/venv/lib/python3.12/site-packages/fused_ssim.py
+# Upstream fused_ssim ships as a CUDA extension that does NOT build on ROCm. Replace
+# it with TriSSIM: a fully-Triton, autotuned forward+backward fused SSIM loss that runs
+# on ROCm (and CUDA), with a pure-torch separable fallback when Triton is unavailable.
+# Installs the `fused_ssim_biauto` package. torch/triton are intentionally not deps, so
+# --no-build-isolation reuses the base image's ROCm torch/triton (no CUDA-wheel pull).
+RUN git clone https://github.com/charyang-ai/TriSSIM.git /opt/trissim \
+    && cd /opt/trissim \
+    && git checkout ${TRISSIM_REF} \
+    && pip install --no-build-isolation --no-cache-dir .
+
+# gsplat's trainer imports the top-level name `from fused_ssim import fused_ssim`, but
+# TriSSIM exposes `fused_ssim_biauto`. Drop a tiny top-level compatibility module that
+# re-exports TriSSIM's API so the trainer resolves it with no PYTHONPATH wiring.
+RUN python - <<'EOF'
+import os, sysconfig
+site = sysconfig.get_paths()["purelib"]
+path = os.path.join(site, "fused_ssim.py")
+with open(path, "w") as f:
+    f.write(
+        "# top-level shim: gsplat imports `from fused_ssim import fused_ssim`;\n"
+        "# TriSSIM installs the API under `fused_ssim_biauto`.\n"
+        "from fused_ssim_biauto import fused_ssim, _HAS_TRITON, _gaussian_1d\n"
+    )
+print("wrote", path)
+EOF
 
 
 # ------------------------------------------------------------

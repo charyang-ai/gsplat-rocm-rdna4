@@ -13,7 +13,11 @@ and the **Radeon AI PRO R9700** (the card used for the results below). Any GPU t
 reports `gfx1201` should build and run with the same image.
 
 <p align="center">
-  <video src="assets/training.mp4" controls width="80%"></video>
+  <img src="assets/training.gif" alt="Training gsplat on AMD RDNA4 (gfx1201)" width="80%">
+</p>
+
+<p align="center">
+  <a href="https://github.com/charyang-ai/gsplat-rocm/blob/main/assets/training.mp4">Watch the full training clip (MP4)</a>
 </p>
 
 ---
@@ -79,7 +83,7 @@ sudo docker run --rm -it \
   --network=host \
   --shm-size=16g \
   -v ~/datasets:/datasets \
-  -v ~/workspace:/home/$(whoami) \
+  -v ~:/home/$(whoami) \
   -w /opt/gsplat \
   -e HSA_OVERRIDE_GFX_VERSION=12.0.1 \
   gsplat-rocm:gfx1201-rocm72 \
@@ -238,7 +242,7 @@ render on the R9700**.
 | `Dockerfile.gfx1201` | Reproducible ROCm/gfx1201 build (fully commented) |
 | `patches/setup.py.gfx1201.patch` | Arch selection + vendored-glm include + HIP version gate |
 | `patches/wave_size.gfx1201.patch` | Guarded `WARP_SIZE` (wave32/wave64) kernel patch |
-| `shims/fused_ssim.py` | Pure-torch SSIM drop-in for the training loss |
+| [`TriSSIM`](https://github.com/charyang-ai/TriSSIM) | Triton fused-SSIM training loss (installed via `pip install .` in the image) |
 | `tests/smoke_test.py` | Import + on-GPU rasterize smoke test |
 | `tests/correctness_test.py` | HIP fwd+bwd vs torch reference |
 | `assets/` | Training GIF + validation renders |
