@@ -1,4 +1,11 @@
-"""End-to-end performance test for the TriSSIM fused-SSIM training loss.
+"""In-PIPELINE performance test for the TriSSIM fused-SSIM training loss.
+
+This benchmarks the fused_ssim the Docker image ACTUALLY trains with: it imports the
+installed `fused_ssim_biauto` (TriSSIM) package (the same one the training pipeline uses),
+so it requires TriSSIM to be installed (it is, inside the image; locally run
+`pip install .` on the TriSSIM repo first). This file is COPYed into the image and meant
+to be run there. For an OFFLINE, dependency-free comparison of multiple hand-rolled SSIM
+variants (no TriSSIM / no image needed), see `ssim_bench_offline.py`.
 
 `examples/simple_trainer.py` calls `1 - fused_ssim(pred, gt, padding="valid")` every
 training step, so the cost that matters is the **forward + backward** through the SSIM
@@ -23,13 +30,13 @@ Every variant is checked against the baseline in BOTH value and gradient, then e
 variant's speedup vs baseline is printed.
 
 Usage (defaults to a single 3x1080x1920 image on the GPU, valid padding, all impls):
-  python perf_fused_ssim.py
-  python perf_fused_ssim.py --height 800 --width 800 --iters 200 --padding valid
-  python perf_fused_ssim.py --batch 4 --dtype float16 --forward-only
-  python perf_fused_ssim.py --impl biauto           # only the Triton fast path
-  python perf_fused_ssim.py --impl separable        # only the pure-torch separable fallback
-  python perf_fused_ssim.py --impl both             # baseline + biauto only
-  python perf_fused_ssim.py --device cpu            # CPU reference (falls back to separable)
+  python ssim_bench_pipeline.py
+  python ssim_bench_pipeline.py --height 800 --width 800 --iters 200 --padding valid
+  python ssim_bench_pipeline.py --batch 4 --dtype float16 --forward-only
+  python ssim_bench_pipeline.py --impl biauto        # only the Triton fast path
+  python ssim_bench_pipeline.py --impl separable     # only the pure-torch separable fallback
+  python ssim_bench_pipeline.py --impl both          # baseline + biauto only
+  python ssim_bench_pipeline.py --device cpu         # CPU reference (falls back to separable)
 """
 from __future__ import annotations
 

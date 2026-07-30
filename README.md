@@ -245,6 +245,8 @@ render on the R9700**.
 | [`TriSSIM`](https://github.com/charyang-ai/TriSSIM) | Triton fused-SSIM training loss (installed via `pip install .` in the image) |
 | `tests/smoke_test.py` | Import + on-GPU rasterize smoke test |
 | `tests/correctness_test.py` | HIP fwd+bwd vs torch reference |
+| `tests/ssim_bench_pipeline.py` | In-pipeline SSIM perf test (benchmarks the installed TriSSIM loss; baked into the image) |
+| `tests/ssim_bench_offline.py` | Offline, self-contained SSIM benchmark (5 inline variants; no TriSSIM/Docker needed) |
 | `assets/` | Training GIF + validation renders |
 
 ---

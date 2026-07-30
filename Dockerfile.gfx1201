@@ -139,10 +139,17 @@ COPY tests/smoke_test.py /opt/gsplat/smoke_test.py
 #   docker run ... gsplat-rocm:gfx1201-rocm72 python /opt/gsplat/correctness_test.py
 COPY tests/correctness_test.py /opt/gsplat/correctness_test.py
 
-# TriSSIM fused-SSIM perf/correctness benchmark (run on the GPU post-build; needs the
-# fused_ssim_biauto package installed further below). Run with:
-#   docker run ... gsplat-rocm:gfx1201-rocm72 python /opt/gsplat/perf_fused_ssim.py
-COPY tests/perf_fused_ssim.py /opt/gsplat/perf_fused_ssim.py
+# In-pipeline TriSSIM fused-SSIM perf/correctness benchmark (run on the GPU post-build;
+# imports the fused_ssim_biauto package installed further below — i.e. the exact loss the
+# image trains with). Run with:
+#   docker run ... gsplat-rocm:gfx1201-rocm72 python /opt/gsplat/ssim_bench_pipeline.py
+COPY tests/ssim_bench_pipeline.py /opt/gsplat/ssim_bench_pipeline.py
+
+# Offline, self-contained SSIM benchmark: five inline variants (baseline / separable /
+# torch.compile / triton / bi-autotune Triton), no TriSSIM import needed. Handy for
+# comparing SSIM kernels on the GPU independent of the training pipeline. Run with:
+#   docker run ... gsplat-rocm:gfx1201-rocm72 python /opt/gsplat/ssim_bench_offline.py
+COPY tests/ssim_bench_offline.py /opt/gsplat/ssim_bench_offline.py
 
 # Build-time verification (no GPU op): the .so linked and the package imports.
 RUN test -f /opt/gsplat/gsplat/csrc.so && python /opt/gsplat/smoke_test.py import
