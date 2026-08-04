@@ -151,6 +151,17 @@ COPY tests/ssim_bench_pipeline.py /opt/gsplat/ssim_bench_pipeline.py
 #   docker run ... gsplat-rocm:gfx1201-rocm72 python /opt/gsplat/ssim_bench_offline.py
 COPY tests/ssim_bench_offline.py /opt/gsplat/ssim_bench_offline.py
 
+# torch.profiler harness: runs a few dozen synthetic 3DGS training steps (rasterize
+# fwd+bwd + loss + optimizer, no dataset needed) and prints kernels sorted by GPU time,
+# to locate the real bottleneck. `--ssim` selects the loss and defaults to `trissim`
+# (installed below); `--ssim baseline|separable` swap in the pure-torch convolution
+# variants, which makes a before/after profile a one-flag change. `--ras_bwd triton`
+# does the same for the rasterizer backward (see triraster below). Run with:
+#   docker run ... gsplat-rocm:gfx1201-rocm72 python /opt/gsplat/profile_trainer.py
+#   docker run ... gsplat-rocm:gfx1201-rocm72 python /opt/gsplat/profile_trainer.py --ssim baseline
+#   docker run ... gsplat-rocm:gfx1201-rocm72 python /opt/gsplat/profile_trainer.py --ras_bwd triton
+COPY tests/profile_trainer.py /opt/gsplat/profile_trainer.py
+
 # Build-time verification (no GPU op): the .so linked and the package imports.
 RUN test -f /opt/gsplat/gsplat/csrc.so && python /opt/gsplat/smoke_test.py import
 
@@ -193,6 +204,51 @@ with open(path, "w") as f:
 print("wrote", path)
 EOF
 
+# Build-time gate (no GPU op): TriSSIM is the image's default SSIM, so assert that the
+# top-level name resolves AND that the Triton fast path is live. Without this the loss
+# would silently degrade to the pure-torch separable fallback and every profile taken
+# in this image would be measuring the wrong kernels.
+RUN python -c "import fused_ssim; \
+assert fused_ssim._HAS_TRITON, 'TriSSIM installed but the Triton fast path is unavailable'; \
+print('TRISSIM OK (default SSIM, triton fast path enabled)')"
+
+
+# ------------------------------------------------------------
+# Triton rasterizer backward  (triraster)
+# ------------------------------------------------------------
+# With the SSIM loss fused, `rasterize_to_pixels_3dgs_bwd_kernel` becomes the largest
+# single kernel in a training step (~24% of GPU time at 500k Gaussians / 1080p).
+# triraster is an autotuned Triton reimplementation of that ONE kernel; the HIP forward
+# rasterizer and every other gsplat kernel are untouched. It is installed but NOT
+# enabled by default: it is opt-in per run via `profile_trainer.py --ras_bwd triton`,
+# so the stock HIP numbers can never move without being asked for.
+COPY triraster /opt/triraster
+RUN pip install --no-build-isolation --no-cache-dir /opt/triraster
+
+# Gradient-correctness gate for triraster (run on the GPU post-build): drives the
+# rasterizer directly and compares all five gradients against the HIP kernel. This is
+# the merge gate for the Triton backward. `--verify-configs` widens it to every autotune
+# candidate (autotuning is per shape-specialisation, so a training run at another
+# resolution can land on a config the default run never exercised) and `--grad-bias`
+# checks the per-Gaussian gradient norm, which is what densification thresholds. Run:
+#   docker run ... gsplat-rocm:gfx1201-rocm72 python /opt/gsplat/rasbwd_correctness_test.py
+#   docker run ... gsplat-rocm:gfx1201-rocm72 python /opt/gsplat/rasbwd_correctness_test.py --verify-configs
+COPY tests/rasbwd_correctness_test.py /opt/gsplat/rasbwd_correctness_test.py
+
+# `examples/simple_trainer.py` has no --tile_size flag and never passes one, so it
+# silently takes whatever `rasterization()` defaults to. This wrapper injects the tile
+# size (and optionally triraster) from the environment, without editing gsplat -- which
+# matters when two runs share one /opt/gsplat on different GPUs. Run with:
+#   GSPLAT_TILE_SIZE=16 python /opt/gsplat/run_simple_trainer.py default --data_dir ...
+COPY tests/run_simple_trainer.py /opt/gsplat/run_simple_trainer.py
+
+# Build-time gate (no GPU op): the package imports and its Triton path is live. Without
+# this, `--ras_bwd triton` would fall back to the HIP kernel and a profile would show a
+# Triton backward that mysteriously performs exactly like the one it replaced.
+RUN python -c "import triraster; \
+assert triraster._HAS_TRITON, 'triraster installed but the Triton path is unavailable'; \
+print('TRIRASTER OK (opt-in via --ras_bwd triton)')"
+
 
 # ------------------------------------------------------------
 # sanity test
@@ -212,6 +268,30 @@ print("HIP:", torch.version.hip)
 print("GPU available:", torch.cuda.is_available())
 print("gsplat:", gsplat.__file__)
 EOF
+
+
+# ------------------------------------------------------------
+# runtime performance knobs (ROCm / RDNA4) — Tier 1, near-zero-cost
+# ------------------------------------------------------------
+# All are RUNTIME env (override at `docker run` with -e ...). Mount the cache dir as a
+# volume to PERSIST tuning results across containers; otherwise TunableOp/MIOpen re-tune
+# on every fresh run (correct, just slower for the first iterations).
+#   * PYTORCH_TUNABLEOP_ENABLED/TUNING — autotune rocBLAS GEMMs per shape, cache the
+#     winner to FILENAME. Big win for the many matmuls in projection/SH/optimizer.
+#   * MIOPEN_FIND_MODE=3 (FAST) + a writable user DB — tune & cache convolutions
+#     (e.g. any conv in perceptual losses / the SSIM fallback path).
+#   * PYTORCH_HIP_ALLOC_CONF=expandable_segments:True — cut allocator fragmentation and
+#     OOM risk on long 3DGS trainings (Gaussian count grows via densification).
+# Set PYTORCH_TUNABLEOP_TUNING=0 (keep ENABLED=1) once the CSV cache is warm to skip
+# re-tuning and just use the cached kernels.
+RUN mkdir -p /opt/gsplat/.tune/tunableop /opt/gsplat/.tune/miopen
+ENV PYTORCH_TUNABLEOP_ENABLED=1 \
+    PYTORCH_TUNABLEOP_TUNING=1 \
+    PYTORCH_TUNABLEOP_FILENAME=/opt/gsplat/.tune/tunableop/tuned_%d.csv \
+    MIOPEN_FIND_MODE=3 \
+    MIOPEN_USER_DB_PATH=/opt/gsplat/.tune/miopen \
+    MIOPEN_CUSTOM_CACHE_DIR=/opt/gsplat/.tune/miopen \
+    PYTORCH_HIP_ALLOC_CONF=expandable_segments:True
 
 
 # Default entrypoint: run the GPU rasterize smoke test (needs a gfx1201 GPU

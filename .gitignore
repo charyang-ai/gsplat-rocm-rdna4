@@ -1,0 +1,15 @@
+__pycache__/
+*.py[cod]
+
+# `pip install -e triraster/` writes these into the working tree
+*.egg-info/
+build/
+dist/
+paper/
+
+# training output, and `profile_trainer.py --trace`
+results/
+trace*.json
+
+# Triton compiles per shape-specialisation, so this grows across resolutions
+.triton/

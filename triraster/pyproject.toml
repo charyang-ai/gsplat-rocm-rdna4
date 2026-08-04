@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "triraster"
+version = "0.1.0"
+description = "Autotuned Triton backward for gsplat's 3DGS pixel rasterizer (ROCm/CUDA)"
+readme = "README.md"
+requires-python = ">=3.9"
+# torch + triton are intentionally NOT listed here: on ROCm they ship together with the
+# pre-installed PyTorch build, and pinning them would risk pip pulling a CUDA wheel and
+# clobbering the ROCm install. gsplat is likewise assumed present -- this package only
+# rebinds a name inside it.
+dependencies = []
+
+[tool.setuptools.packages.find]
+where = ["src"]
