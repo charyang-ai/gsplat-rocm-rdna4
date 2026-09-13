@@ -151,6 +151,12 @@ COPY tests/ssim_bench_pipeline.py /opt/gsplat/ssim_bench_pipeline.py
 #   docker run ... gsplat-rocm:gfx1201-rocm72 python /opt/gsplat/ssim_bench_offline.py
 COPY tests/ssim_bench_offline.py /opt/gsplat/ssim_bench_offline.py
 
+# torch.profiler harness: runs a few dozen synthetic 3DGS training steps (rasterize
+# fwd+bwd + loss + optimizer, no dataset needed) and prints kernels sorted by GPU time,
+# to locate the real bottleneck. Run with:
+#   docker run ... gsplat-rocm:gfx1201-rocm72 python /opt/gsplat/profile_trainer.py
+COPY tests/profile_trainer.py /opt/gsplat/profile_trainer.py
+
 # Build-time verification (no GPU op): the .so linked and the package imports.
 RUN test -f /opt/gsplat/gsplat/csrc.so && python /opt/gsplat/smoke_test.py import
 
@@ -212,6 +218,30 @@ print("HIP:", torch.version.hip)
 print("GPU available:", torch.cuda.is_available())
 print("gsplat:", gsplat.__file__)
 EOF
+
+
+# ------------------------------------------------------------
+# runtime performance knobs (ROCm / RDNA4) — Tier 1, near-zero-cost
+# ------------------------------------------------------------
+# All are RUNTIME env (override at `docker run` with -e ...). Mount the cache dir as a
+# volume to PERSIST tuning results across containers; otherwise TunableOp/MIOpen re-tune
+# on every fresh run (correct, just slower for the first iterations).
+#   * PYTORCH_TUNABLEOP_ENABLED/TUNING — autotune rocBLAS GEMMs per shape, cache the
+#     winner to FILENAME. Big win for the many matmuls in projection/SH/optimizer.
+#   * MIOPEN_FIND_MODE=3 (FAST) + a writable user DB — tune & cache convolutions
+#     (e.g. any conv in perceptual losses / the SSIM fallback path).
+#   * PYTORCH_HIP_ALLOC_CONF=expandable_segments:True — cut allocator fragmentation and
+#     OOM risk on long 3DGS trainings (Gaussian count grows via densification).
+# Set PYTORCH_TUNABLEOP_TUNING=0 (keep ENABLED=1) once the CSV cache is warm to skip
+# re-tuning and just use the cached kernels.
+RUN mkdir -p /opt/gsplat/.tune/tunableop /opt/gsplat/.tune/miopen
+ENV PYTORCH_TUNABLEOP_ENABLED=1 \
+    PYTORCH_TUNABLEOP_TUNING=1 \
+    PYTORCH_TUNABLEOP_FILENAME=/opt/gsplat/.tune/tunableop/tuned_%d.csv \
+    MIOPEN_FIND_MODE=3 \
+    MIOPEN_USER_DB_PATH=/opt/gsplat/.tune/miopen \
+    MIOPEN_CUSTOM_CACHE_DIR=/opt/gsplat/.tune/miopen \
+    PYTORCH_HIP_ALLOC_CONF=expandable_segments:True
 
 
 # Default entrypoint: run the GPU rasterize smoke test (needs a gfx1201 GPU

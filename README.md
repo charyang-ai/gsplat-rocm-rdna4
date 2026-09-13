@@ -247,6 +247,9 @@ render on the R9700**.
 | `tests/correctness_test.py` | HIP fwd+bwd vs torch reference |
 | `tests/ssim_bench_pipeline.py` | In-pipeline SSIM perf test (benchmarks the installed TriSSIM loss; baked into the image) |
 | `tests/ssim_bench_offline.py` | Offline, self-contained SSIM benchmark (5 inline variants; no TriSSIM/Docker needed) |
+| `tests/ssim_bench_repeat.py` | Table 1 (`tab:ssim_perf`): 5× mean ± std of isolated SSIM kernels |
+| `tests/bench_table2.py` | Table 2 (`tab:profiler_comparison`): 5× paired baseline vs TriSSIM full training step |
+| `tests/profile_trainer.py` | torch.profiler harness: synthetic 3DGS step, kernels ranked by GPU time |
 | `assets/` | Training GIF + validation renders |
 
 ---

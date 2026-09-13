@@ -1,0 +1,16 @@
+__pycache__/
+*.py[cod]
+
+*.egg-info/
+build/
+dist/
+
+# paper drafts and their LaTeX sources are kept out of this repo
+paper/
+
+# training output, and `profile_trainer.py --trace`
+results/
+trace*.json
+
+# Triton compiles per shape-specialisation, so this grows across resolutions
+.triton/
