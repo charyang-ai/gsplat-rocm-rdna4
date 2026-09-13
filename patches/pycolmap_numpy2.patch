@@ -1,0 +1,17 @@
+# pycolmap @cc7ea4b (pinned by gsplat/examples/requirements.txt) predates NumPy 2,
+# where np.uint64(-1) raises OverflowError instead of wrapping. The sentinel is
+# meant to be the all-ones word, so spell it that way. Applied to the installed
+# copy because upstream is a frozen git pin:
+#   .venv/lib/python3.12/site-packages/pycolmap/scene_manager.py
+#
+# The alternative -- honouring the requirements' numpy<2.0.0 pin -- would mean
+# downgrading NumPy underneath torch 2.13+rocm7.2, which is a far larger blast
+# radius than one sentinel constant.
+--- a/pycolmap/scene_manager.py
++++ b/pycolmap/scene_manager.py
+@@ -19,7 +19,7 @@
+ 
+ 
+ class SceneManager:
+-    INVALID_POINT3D = np.uint64(-1)
++    INVALID_POINT3D = np.uint64(2**64 - 1)

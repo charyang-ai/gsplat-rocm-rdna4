@@ -1,0 +1,69 @@
+diff --git a/gsplat/cuda/include/Common.cuh b/gsplat/cuda/include/Common.cuh
+index a43c87e..27a7b76 100644
+--- a/gsplat/cuda/include/Common.cuh
++++ b/gsplat/cuda/include/Common.cuh
+@@ -2,6 +2,7 @@
+ 
+ #include <algorithm>
+ #include <cstdint>
++#include <ATen/ops/empty.h>  // CUB_WRAPPER's temp storage
+ #include <glm/gtc/type_ptr.hpp>
+ 
+ #ifndef USE_ROCM
+@@ -21,6 +22,30 @@
+ 
+ namespace gsplat {
+ 
++// gfx1201 (RDNA 3.5 / Strix Halo) is wave32, while this fork was written for
++// CDNA wave64. WARP_SIZE is the one compile-time knob that makes the reduction /
++// tiling code correct on BOTH: 64 on CDNA, 32 on RDNA(gfx11/12), 32 on NVIDIA.
++//
++// We key off the __gfx9__ architecture predicate, NOT __AMDGCN_WAVEFRONT_SIZE:
++// only the gfx9 family (CDNA / GCN) is wave64; every gfx10/11/12 (RDNA) target is
++// wave32. AMD's rocPRIM maintainers recommend this arch predicate as the durable
++// form (ROCm/ROCm#4121) because __AMDGCN_WAVEFRONT_SIZE is deprecated as of ROCm
++// 7.0.2 and slated for removal, and warpSize is not a host-side constant (this
++// constant is also read in the host-side launch_* sizing code). The predicate is
++// a compile-time macro evaluated per --offload-arch, so the SAME source compiles
++// to a correct wave64 object on CDNA and a correct wave32 object on gfx1201.
++#ifdef USE_ROCM
++  #if defined(__gfx900__) || defined(__gfx906__) || defined(__gfx908__) ||      \
++      defined(__gfx90a__) || defined(__gfx940__) || defined(__gfx941__) ||      \
++      defined(__gfx942__) || defined(__gfx950__)
++    constexpr int WARP_SIZE = 64;   // CDNA / GCN (gfx9) is wave64
++  #else
++    constexpr int WARP_SIZE = 32;   // RDNA (gfx10/11/12), incl. gfx1201, is wave32
++  #endif
++#else
++    constexpr int WARP_SIZE = 32;   // NVIDIA
++#endif
++
+ #ifndef USE_ROCM
+ // https://github.com/pytorch/pytorch/blob/233305a852e1cd7f319b15b5137074c9eac455f6/aten/src/ATen/cuda/cub.cuh#L38-L46
+ // handle the temporary storage and 'twice' calls for cub API
+@@ -34,13 +59,21 @@ namespace gsplat {
+     } while (false)
+ #else
+ #define cub hipcub
++// Temp storage comes from `at::empty` rather than the caching allocator's own
++// `allocate()`: `c10::hip::HIPCachingAllocator::get()` (the hipified spelling of
++// `c10::cuda::CUDACachingAllocator::get()`) no longer exists in torch >= 2.10, where
++// the per-device allocators moved behind `c10::getDeviceAllocator()`. `at::empty` goes
++// through the same caching allocator on every version, so this only changes which
++// spelling is used to reach it, and adds no device-side work.
+ #define CUB_WRAPPER(func, ...)                                                 \
+     do {                                                                       \
+         size_t temp_storage_bytes = 0;                                         \
+-        auto res = func(nullptr, temp_storage_bytes, __VA_ARGS__);                        \
+-        auto &caching_allocator = *::c10::hip::HIPCachingAllocator::get();   \
+-        auto temp_storage = caching_allocator.allocate(temp_storage_bytes);    \
+-        res = func(temp_storage.get(), temp_storage_bytes, __VA_ARGS__);  \
++        auto res = func(nullptr, temp_storage_bytes, __VA_ARGS__);              \
++        auto temp_storage = at::empty(                                          \
++            {static_cast<int64_t>(temp_storage_bytes)},                         \
++            at::TensorOptions().dtype(at::kByte).device(at::kCUDA)              \
++        );                                                                     \
++        res = func(temp_storage.data_ptr(), temp_storage_bytes, __VA_ARGS__);   \
+ 	assert(res == hipSuccess);                                            \
+     } while (false)
+ #endif

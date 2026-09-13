@@ -1,0 +1,170 @@
+diff --git a/gsplat/cuda/csrc/Intersect.cpp b/gsplat/cuda/csrc/Intersect.cpp
+index f875565..9e409a3 100644
+--- a/gsplat/cuda/csrc/Intersect.cpp
++++ b/gsplat/cuda/csrc/Intersect.cpp
+@@ -147,6 +147,40 @@ std::tuple<at::Tensor, at::Tensor, at::Tensor> intersect_tile(
+     }
+ }
+ 
++std::tuple<at::Tensor, at::Tensor> intersect_sort_pairs(
++    const at::Tensor keys,   // [n_isects] int64 or int32
++    const at::Tensor values, // [n_isects] int32
++    const int64_t begin_bit,
++    const int64_t end_bit
++) {
++    DEVICE_GUARD(keys);
++    CHECK_INPUT(keys);
++    CHECK_INPUT(values);
++    TORCH_CHECK(
++        keys.numel() == values.numel(), "keys and values must have equal length"
++    );
++    TORCH_CHECK(values.scalar_type() == at::kInt, "values must be int32");
++    TORCH_CHECK(
++        keys.scalar_type() == at::kLong || keys.scalar_type() == at::kInt,
++        "keys must be int64 or int32"
++    );
++
++    at::Tensor keys_sorted = at::empty_like(keys);
++    at::Tensor values_sorted = at::empty_like(values);
++    // NOTE: DoubleBuffer uses the *inputs* as scratch, so their contents are undefined
++    // after this call. Every caller passes a temporary, exactly as intersect_tile does.
++    radix_sort_pairs_bits(
++        keys.numel(),
++        begin_bit,
++        end_bit,
++        keys,
++        values,
++        keys_sorted,
++        values_sorted
++    );
++    return std::make_tuple(keys_sorted, values_sorted);
++}
++
+ at::Tensor intersect_offset(
+     const at::Tensor isect_ids, // [n_isects]
+     const uint32_t I,
+diff --git a/gsplat/cuda/csrc/Intersect.h b/gsplat/cuda/csrc/Intersect.h
+index 801b7e9..3fe948a 100644
+--- a/gsplat/cuda/csrc/Intersect.h
++++ b/gsplat/cuda/csrc/Intersect.h
+@@ -46,6 +46,18 @@ void radix_sort_double_buffer(
+     at::Tensor flatten_ids_sorted
+ );
+ 
++// Same DoubleBuffer SortPairs as above, with the bit range given explicitly and the
++// key width chosen by the caller's dtype (int64 or int32).
++void radix_sort_pairs_bits(
++    const int64_t n_isects,
++    const int64_t begin_bit,
++    const int64_t end_bit,
++    at::Tensor keys,
++    at::Tensor values,
++    at::Tensor keys_sorted,
++    at::Tensor values_sorted
++);
++
+ void segmented_radix_sort_double_buffer(
+     const int64_t n_isects,
+     const uint32_t n_segments,
+diff --git a/gsplat/cuda/csrc/IntersectTile.cu b/gsplat/cuda/csrc/IntersectTile.cu
+index ac58f24..ccfdedf 100644
+--- a/gsplat/cuda/csrc/IntersectTile.cu
++++ b/gsplat/cuda/csrc/IntersectTile.cu
+@@ -333,6 +333,63 @@ void radix_sort_double_buffer(
+     }
+ }
+ 
++template <typename K>
++static void radix_sort_pairs_bits_impl(
++    const int64_t n_isects,
++    const int64_t begin_bit,
++    const int64_t end_bit,
++    at::Tensor keys,
++    at::Tensor values,
++    at::Tensor keys_sorted,
++    at::Tensor values_sorted
++) {
++    cub::DoubleBuffer<K> d_keys(
++        keys.data_ptr<K>(), keys_sorted.data_ptr<K>()
++    );
++    cub::DoubleBuffer<int32_t> d_values(
++        values.data_ptr<int32_t>(), values_sorted.data_ptr<int32_t>()
++    );
++    CUB_WRAPPER(
++        cub::DeviceRadixSort::SortPairs,
++        d_keys,
++        d_values,
++        n_isects,
++        static_cast<int>(begin_bit),
++        static_cast<int>(end_bit),
++        GET_CURRENT_STREAM()
++    );
++    // DoubleBuffer ping-pongs, so the sorted data can end up in either allocation.
++    if (d_keys.selector == 0) {
++        keys_sorted.set_(keys);
++    }
++    if (d_values.selector == 0) {
++        values_sorted.set_(values);
++    }
++}
++
++void radix_sort_pairs_bits(
++    const int64_t n_isects,
++    const int64_t begin_bit,
++    const int64_t end_bit,
++    at::Tensor keys,
++    at::Tensor values,
++    at::Tensor keys_sorted,
++    at::Tensor values_sorted
++) {
++    if (n_isects <= 0) {
++        return;
++    }
++    if (keys.scalar_type() == at::kLong) {
++        radix_sort_pairs_bits_impl<int64_t>(
++            n_isects, begin_bit, end_bit, keys, values, keys_sorted, values_sorted
++        );
++    } else {
++        radix_sort_pairs_bits_impl<int32_t>(
++            n_isects, begin_bit, end_bit, keys, values, keys_sorted, values_sorted
++        );
++    }
++}
++
+ // https://nvidia.github.io/cccl/cub/api/structcub_1_1DeviceSegmentedRadixSort.html
+ // DoubleBuffer reduce the auxiliary memory usage from O(N+P) to O(P)
+ void segmented_radix_sort_double_buffer(
+diff --git a/gsplat/cuda/ext.cpp b/gsplat/cuda/ext.cpp
+index 7f7298c..d472fb1 100644
+--- a/gsplat/cuda/ext.cpp
++++ b/gsplat/cuda/ext.cpp
+@@ -29,6 +29,7 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
+ 
+     m.def("intersect_tile", &gsplat::intersect_tile);
+     m.def("intersect_offset", &gsplat::intersect_offset);
++    m.def("intersect_sort_pairs", &gsplat::intersect_sort_pairs);
+ 
+     m.def("projection_ewa_simple_fwd", &gsplat::projection_ewa_simple_fwd);
+     m.def("projection_ewa_simple_bwd", &gsplat::projection_ewa_simple_bwd);
+diff --git a/gsplat/cuda/include/Ops.h b/gsplat/cuda/include/Ops.h
+index 3638a13..65845bf 100644
+--- a/gsplat/cuda/include/Ops.h
++++ b/gsplat/cuda/include/Ops.h
+@@ -202,6 +202,17 @@ at::Tensor intersect_offset(
+     const uint32_t tile_width,
+     const uint32_t tile_height
+ );
++// The radix sort `intersect_tile` runs internally, over an explicit bit range and
++// callable on its own. Two reasons it is exposed: an implementation that emits the
++// pairs elsewhere still needs *this* sort to be comparable against the fused op, and
++// the bit range is the whole point of the depth-presorted variant (a stable sort over
++// the tile bits alone reproduces the same order as one over tile+depth).
++std::tuple<at::Tensor, at::Tensor> intersect_sort_pairs(
++    const at::Tensor keys,   // [n_isects] int64 or int32
++    const at::Tensor values, // [n_isects] int32
++    const int64_t begin_bit,
++    const int64_t end_bit
++);
+ 
+ // Compute Covariance and Precision Matrices from Quaternion and Scale
+ std::tuple<at::Tensor, at::Tensor> quat_scale_to_covar_preci_fwd(
