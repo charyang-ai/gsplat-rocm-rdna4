@@ -71,7 +71,24 @@ if _HAS_TRITON:
         except Exception:
             return False
 
-    _HAS_WAVES_PER_EU = _amd_option("waves_per_eu")
+    def _backend_is_hip() -> bool:
+        """Whether HIP is the *active* Triton backend. Triton ships every
+        backend, so `HIPOptions` exists on an NVIDIA host too and probing it
+        alone is not enough: the CUDA backend rejects `waves_per_eu` at launch
+        with a KeyError."""
+        try:
+            import triton
+
+            return triton.runtime.driver.active.get_current_target().backend == "hip"
+        except Exception:
+            try:
+                import torch
+
+                return torch.version.hip is not None
+            except Exception:
+                return False
+
+    _HAS_WAVES_PER_EU = _amd_option("waves_per_eu") and _backend_is_hip()
 
     def _configs():
         """Full sweeps on the real training scene at both tile sizes show two competing
