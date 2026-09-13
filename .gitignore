@@ -5,7 +5,7 @@ __pycache__/
 *.egg-info/
 build/
 dist/
-paper/
+paper
 
 # training output, and `profile_trainer.py --trace`
 results/
