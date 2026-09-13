@@ -6,7 +6,7 @@ build/
 dist/
 
 # paper drafts and their LaTeX sources are kept out of this repo
-paper/
+paper
 
 # training output, and `profile_trainer.py --trace`
 results/
