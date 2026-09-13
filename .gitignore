@@ -7,8 +7,8 @@ build/
 dist/
 
 # paper drafts and their LaTeX sources are kept out of this repo
-paper/
-triraster-latex-src/
+paper
+triraster-latex-src
 
 # training output, and `profile_trainer.py --trace`
 results/
