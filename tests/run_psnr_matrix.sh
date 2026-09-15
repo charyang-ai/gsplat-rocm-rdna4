@@ -26,7 +26,6 @@
 #
 # The collector globs every tile*_*_r* under RESULT_ROOT, so it will report all
 # six once they are there.
-#
 # The container needs a large /dev/shm for this: eight concurrent trainers each
 # run DataLoader workers, and Docker's 64 MB default crashes them. Start it with
 # --shm-size=64g, as the multi-GPU section of the README already does.

@@ -5,7 +5,6 @@ __pycache__/
 *.egg-info/
 build/
 dist/
-
 # paper drafts and their LaTeX sources are kept out of this repo
 paper
 triraster-latex-src
@@ -16,3 +15,7 @@ trace*.json
 
 # Triton compiles per shape-specialisation, so this grows across resolutions
 .triton/
+
+# host-venv build of the pinned gsplat ref, for running outside the Docker image
+.venv/
+.gsplat/

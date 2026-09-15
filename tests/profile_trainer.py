@@ -179,6 +179,43 @@ def _select_ras_bwd(name: str) -> str:
             f"{os.path.dirname(os.path.abspath(triraster.__file__))})")
 
 
+# ----------------------------------------------------------------------------------
+# Tile intersection (--isect). `baseline` is gsplat's stock HIP `intersect_tile` plus its
+# cub radix sort; the other two swap in the Triton stage from the sibling `triisect/`.
+# ----------------------------------------------------------------------------------
+def _select_isect(name: str) -> str:
+    """Install the requested tile-intersection stage and return a label for the header.
+
+    Same rule as `--ras_bwd`: a missing `triisect` aborts rather than silently profiling
+    the HIP path under a Triton label."""
+    if name == "baseline":
+        return "baseline (gsplat HIP intersect_tile + cub radix sort)"
+
+    src = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                       os.pardir, "triisect", "src")
+    if os.path.isdir(src) and src not in sys.path:
+        sys.path.insert(0, src)
+    try:
+        import triisect
+    except Exception as exc:
+        raise SystemExit(
+            f"--isect {name} requested but `import triisect` failed: {exc}\n"
+            "Outside the Docker image run\n"
+            "  pip install --no-build-isolation ./triisect\n"
+            "or profile the stock stage with --isect baseline."
+        ) from exc
+    presort = name in ("triton", "exact")
+    exact = name == "exact"
+    triisect.install(presort=presort, exact=exact)
+    if not triisect.is_installed():
+        raise SystemExit("triisect.install() did not take effect on gsplat")
+    kind = ("emit+presorted sort+exact ellipse" if exact
+            else "emit+presorted sort" if presort
+            else "emit only, baseline 64-bit sort")
+    return (f"{name} (triisect {triisect.__version__}, {kind}, from "
+            f"{os.path.dirname(os.path.abspath(triisect.__file__))})")
+
+
 def _make_scene(n: int, sh_degree: int, device, dtype):
     """Random Gaussians as trainable leaves, placed in front of a single camera."""
     means = (torch.randn(n, 3, device=device, dtype=dtype) * 0.5).requires_grad_(True)
@@ -234,6 +271,15 @@ def main() -> None:
                         "baseline = gsplat's stock HIP kernel (default, so the "
                         "reference numbers never move silently); "
                         "triton = the autotuned Triton kernel from triraster/")
+    p.add_argument("--isect", choices=("baseline", "emit", "triton", "exact"),
+                   default="baseline",
+                   help="tile-intersection stage: "
+                        "baseline = gsplat's HIP intersect_tile + cub radix sort "
+                        "(default); emit = Triton output-parallel emit, baseline 64-bit "
+                        "sort; triton = emit plus the depth-presorted 32-bit tile sort "
+                        "and searchsorted offsets; exact = also test tiles against the "
+                        "ellipse rather than its bounding box, which shortens the list "
+                        "the rasterizer walks without changing the image")
     p.add_argument("--row-limit", type=int, default=30,
                    help="rows in the sorted kernel table")
     p.add_argument("--sort-by", default="self_cuda_time_total",
@@ -257,6 +303,7 @@ def main() -> None:
         print("NOTE: --no-ssim is deprecated; use --ssim off", flush=True)
     ssim_fn, ssim_label = _select_ssim("off" if args.no_ssim else args.ssim)
     ras_bwd_label = _select_ras_bwd(args.ras_bwd)
+    isect_label = _select_isect(args.isect)
 
     print(f"torch {torch.__version__}  hip {torch.version.hip}  device {device}",
           flush=True)
@@ -264,7 +311,8 @@ def main() -> None:
         print(f"GPU: {torch.cuda.get_device_name(device)}", flush=True)
     print(f"gaussians={args.num_gaussians}  image={args.width}x{args.height}  "
           f"sh_degree={args.sh_degree}  ssim={ssim_label}  "
-          f"ras_bwd={ras_bwd_label}  tile_size={args.tile_size}  "
+          f"ras_bwd={ras_bwd_label}  isect={isect_label}  "
+          f"tile_size={args.tile_size}  "
           f"warmup={args.warmup}  iters={args.iters}", flush=True)
 
     means, quats, scales, opacities, colors = _make_scene(
