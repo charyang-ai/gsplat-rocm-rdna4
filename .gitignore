@@ -1,12 +1,14 @@
 __pycache__/
 *.py[cod]
 
+# `pip install -e triraster/` writes these into the working tree
 *.egg-info/
 build/
 dist/
 
 # paper drafts and their LaTeX sources are kept out of this repo
 paper
+triraster-latex-src
 
 # training output, and `profile_trainer.py --trace`
 results/

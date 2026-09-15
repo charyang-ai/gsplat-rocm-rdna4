@@ -1,0 +1,53 @@
+GPU: AMD Radeon AI PRO R9700
+Table 1 config: 500000 gaussians, 1920x1080, sh=3, warmup=10, iters=30, runs=5
+
+=== run 1/5 (seed=0) ===
+  tile_size=8 ...
+/home/charyang/gsplat-rocm-rdna4/tests/profile_trainer.py:184: UserWarning: expandable_segments not supported on this platform (Triggered internally at /pytorch/c10/hip/HIPAllocatorConfig.h:36.)
+  means = (torch.randn(n, 3, device=device, dtype=dtype) * 0.5).requires_grad_(True)
+[W811 09:00:01.993067660 collection.cpp:1133] Warning: ROCTracer produced duplicate flow start: 321 (function operator())
+    int=333.7 sort=276.5 fwd=15.1 bwd=366.0 total=1526.3 ms
+  tile_size=16 ...
+    int=51.7 sort=85.6 fwd=17.7 bwd=294.9 total=966.7 ms
+
+=== run 2/5 (seed=1) ===
+  tile_size=8 ...
+    int=338.3 sort=276.7 fwd=15.4 bwd=363.6 total=1529.2 ms
+  tile_size=16 ...
+    int=53.1 sort=85.6 fwd=17.8 bwd=295.4 total=968.7 ms
+
+=== run 3/5 (seed=2) ===
+  tile_size=8 ...
+    int=330.1 sort=276.1 fwd=15.2 bwd=362.3 total=1519.1 ms
+  tile_size=16 ...
+    int=51.6 sort=85.5 fwd=17.8 bwd=294.4 total=965.8 ms
+
+=== run 4/5 (seed=3) ===
+  tile_size=8 ...
+    int=332.3 sort=276.7 fwd=15.3 bwd=365.6 total=1525.1 ms
+  tile_size=16 ...
+    int=52.1 sort=85.7 fwd=17.8 bwd=297.2 total=969.4 ms
+
+=== run 5/5 (seed=4) ===
+  tile_size=8 ...
+    int=331.9 sort=277.1 fwd=15.2 bwd=363.4 total=1522.8 ms
+  tile_size=16 ...
+    int=51.3 sort=85.7 fwd=17.7 bwd=294.2 total=965.8 ms
+
+========================================================================
+MEAN over 5 runs:
+  Tile intersection             tau=8:   333.3 ms   tau=16:    51.9 ms   ratio: 6.41x
+  Radix sort                    tau=8:   276.6 ms   tau=16:    85.6 ms   ratio: 3.23x
+  Rasterization forward         tau=8:    15.2 ms   tau=16:    17.8 ms   ratio: 0.86x
+  Rasterization backward        tau=8:   364.2 ms   tau=16:   295.2 ms   ratio: 1.23x
+  Total measured GPU time       tau=8:  1524.5 ms   tau=16:   967.3 ms   ratio: 1.58x
+
+LaTeX rows (paste into tab:coupling):
+Tile intersection            & 333.3\,ms & \phantom{0}51.9\,ms & 6.41$\times$ \\
+Radix sort                   & 276.6\,ms & \phantom{0}85.6\,ms & 3.23$\times$ \\
+Rasterization forward        & \phantom{0}15.2\,ms & \phantom{0}17.8\,ms & 0.86$\times$ \\
+Rasterization backward       & 364.2\,ms & 295.2\,ms & 1.23$\times$ \\
+Total measured GPU time      & 1.525\,s & \textbf{0.967\,s} & 1.58$\times$ \\
+
+Wrote /home/charyang/gsplat-rocm-rdna4/tests/table1_results.json
+[W811 09:00:39.278631033 AllocatorConfig.cpp:29] Warning: PYTORCH_HIP_ALLOC_CONF is deprecated, use PYTORCH_ALLOC_CONF instead (function operator())
