@@ -5,7 +5,10 @@ __pycache__/
 *.egg-info/
 build/
 dist/
-paper/
+
+# paper drafts and their LaTeX sources are kept out of this repo
+paper
+triraster-latex-src
 
 # training output, and `profile_trainer.py --trace`
 results/

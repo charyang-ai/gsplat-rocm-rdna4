@@ -243,6 +243,119 @@ def _bench(fn_cls, inputs, isect_offsets, flatten_ids, width, height, tile_size,
     return times[len(times) // 2]
 
 
+def _ppl_sweep(args, device) -> None:
+    """Time every candidate at several tile sizes and order the results by pixels
+    per lane.
+
+    The tile size is not part of a `triton.Config`; it changes the tile
+    intersection, so each one needs its own captured scene. That is also why this
+    cannot run on synthetic Gaussians: how many primitives land in a tile is a
+    property of the scene, and it is exactly what the backward's cost depends on.
+
+    A configuration is summarised by
+
+        pi = tile^2 / (SPLIT * W * num_warps)
+
+    and the model says pi orders the configurations on its own -- that a point's
+    tile size should not matter once pi is fixed. The sweep prints the points
+    sorted by pi with their tile size attached, so a violation is visible as two
+    tile sizes disagreeing at the same pi.
+    """
+    import triraster
+
+    tiles = [int(t) for t in args.ppl_sweep.split(",") if t.strip()]
+    try:
+        warp = torch.cuda.get_device_properties(device).warp_size
+    except AttributeError:
+        warp = 32
+
+    print(f"\n=== pixels-per-lane sweep: tiles {tiles}, W={warp} ===", flush=True)
+    rows = []
+    for tile in tiles:
+        try:
+            cap = _capture_trainer_inputs(args.num_gaussians, args.width, args.height,
+                                          args.sh_degree, tile, device, args.seed)
+        except Exception as exc:  # a tile size the forward rasterizer rejects
+            print(f"\ntile {tile}: capture failed, skipping -- {type(exc).__name__}: "
+                  f"{exc}", flush=True)
+            continue
+
+        inputs = (cap["means2d"], cap["conics"], cap["colors"], cap["opacities"])
+        bwd_args = _backward_args(
+            inputs, isect_offsets=cap["isect_offsets"],
+            flatten_ids=cap["flatten_ids"], width=cap["width"],
+            height=cap["height"], tile_size=cap["tile_size"], seed=args.seed)
+        print(f"\ntile {tile}: n_isects={cap['flatten_ids'].numel()}", flush=True)
+
+        for cfg, ms in triraster.bench_configs(*bwd_args):
+            split = cfg.kwargs.get("SPLIT", 1)
+            ppl = tile * tile / (split * warp * cfg.num_warps)
+            rows.append({
+                "tile": tile, "split": split, "num_warps": cfg.num_warps,
+                "waves_per_eu": cfg.kwargs.get("waves_per_eu", ""),
+                "block_g": cfg.kwargs.get("BLOCK_G", 1), "ppl": ppl, "ms": ms,
+            })
+            print(f"  ppl={ppl:7.2f}  "
+                  f"{'   failed' if ms is None else f'{ms:8.3f} ms'}   "
+                  f"SPLIT={split} num_warps={cfg.num_warps} "
+                  f"waves_per_eu={cfg.kwargs.get('waves_per_eu', '-')}", flush=True)
+
+    timed = [r for r in rows if r["ms"] is not None]
+    if not timed:
+        print("\nno configuration completed; nothing to say about the model")
+        return
+
+    print(f"\n{'ppl':>7} {'ms':>9} {'tile':>5} {'SPLIT':>6} {'warps':>6}   "
+          "(sorted by pixels per lane)")
+    for r in sorted(timed, key=lambda r: r["ppl"]):
+        print(f"{r['ppl']:>7.2f} {r['ms']:>9.3f} {r['tile']:>5} "
+              f"{r['split']:>6} {r['num_warps']:>6}")
+
+    # The model's testable content: at a shared pi, tile size should not matter.
+    #
+    # Conditioned on num_warps, deliberately. num_warps moves pi like SPLIT does,
+    # but it also moves the reduction from wave32 cross-lane operations into LDS
+    # with barriers, so two configurations at equal pi and unequal num_warps are
+    # not doing the same work and are not expected to agree. Pooling over it
+    # would fail the test for a reason the design already accounts for. Within a
+    # num_warps, SPLIT and tile size are the only things varying, and there the
+    # model makes a real prediction.
+    by_key: dict[tuple[float, int], list[dict]] = {}
+    for r in timed:
+        by_key.setdefault((round(r["ppl"], 6), r["num_warps"]), []).append(r)
+    shared = {k: v for k, v in by_key.items() if len({r["tile"] for r in v}) > 1}
+    if shared:
+        print("\ncollapse check -- same pi and same num_warps, different tile size:")
+        worst, worst_at = 0.0, None
+        for key in sorted(shared):
+            ppl, nw = key
+            group = shared[key]
+            lo = min(r["ms"] for r in group)
+            hi = max(r["ms"] for r in group)
+            if hi / lo > worst:
+                worst, worst_at = hi / lo, key
+            detail = ", ".join(f"tile {r['tile']} (SPLIT {r['split']}): {r['ms']:.3f} ms"
+                               for r in sorted(group, key=lambda r: r["tile"]))
+            print(f"  ppl={ppl:6.2f} warps={nw}  spread {hi / lo:4.2f}x   {detail}")
+        print(f"\n  worst disagreement at matched pi: {worst:.2f}x "
+              f"(ppl={worst_at[0]:g}, num_warps={worst_at[1]})")
+        print("  A collapse worth calling a model wants this near 1. If it is not,"
+              "\n  weaken §3.5 to a heuristic and say so -- an overclaimed model is a"
+              "\n  worse outcome than an honest heuristic.")
+    else:
+        print("\nno (pi, num_warps) pair is shared between tile sizes, so this sweep"
+              "\ncannot test the collapse. Tile sizes two apart do share values:"
+              "\ntile 8 SPLIT 1 and tile 16 SPLIT 4 are both 2 px/lane at num_warps 1.")
+
+    if args.ppl_csv:
+        import csv
+        with open(args.ppl_csv, "w", newline="") as fh:
+            w = csv.DictWriter(fh, fieldnames=list(rows[0]))
+            w.writeheader()
+            w.writerows(rows)
+        print(f"\nwrote {len(rows)} rows to {args.ppl_csv}")
+
+
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -266,6 +379,26 @@ def main() -> None:
                         "just the one autotune happens to select here. Autotuning is "
                         "per shape-specialisation, so a training run at another "
                         "resolution can land on a config this test never exercised")
+    p.add_argument("--ppl-sweep", metavar="TILES", default=None,
+                   help="comma-separated tile sizes, e.g. 8,16,32. Times every "
+                        "autotune candidate at each one and reports the results "
+                        "against pixels per lane, tile^2/(SPLIT*W*num_warps). The "
+                        "claim under test is that this single quantity orders the "
+                        "configurations: if points from different tile sizes do not "
+                        "fall on one curve, the model is a heuristic and the paper "
+                        "has to say so")
+    p.add_argument("--ppl-csv", default=None,
+                   help="write the --ppl-sweep measurements here for plotting")
+    p.add_argument("--grow-grad2d", type=float, default=2e-4,
+                   help="densification threshold used by --grad-bias to count how "
+                        "many Gaussians would change side. gsplat's DefaultStrategy "
+                        "default is 2e-4")
+    p.add_argument("--bias-csv", default=None,
+                   help="write the per-Gaussian --grad-bias measurements here: one row "
+                        "per live Gaussian, its reference gradient norm and the signed "
+                        "relative difference under every candidate. Enough to plot the "
+                        "error distribution against the margin each Gaussian has to the "
+                        "densification threshold, which is what explains the flip count")
     p.add_argument("--sh-degree", type=int, default=3,
                    help="SH degree for the captured scene (matches the profiled run)")
     p.add_argument("--seed", type=int, default=0)
@@ -333,6 +466,9 @@ def main() -> None:
               f"n_isects={n_isects}  ->  {'PASS' if ok else 'FAIL'}", flush=True)
         print("\n".join(lines), flush=True)
 
+    if args.ppl_sweep:
+        _ppl_sweep(args, device)
+
     if args.bench or args.tune_report or args.verify_configs or args.grad_bias:
         cap = _capture_trainer_inputs(args.num_gaussians, args.width, args.height,
                                       args.sh_degree, args.tile_size, device, args.seed)
@@ -368,21 +504,65 @@ def main() -> None:
         ref_n = _norm(ref_v)
         live = ref_n > 0
         n_live = int(live.sum())
+        thr = args.grow_grad2d
         print(f"\nper-Gaussian |v_means2d| vs HIP  ({n_live} of {ref_n.numel()} touched)."
               "\n  bias is the mean SIGNED relative difference: a positive one means "
               "Triton\n  reports systematically larger gradients, which would densify "
-              "harder.")
+              "harder.\n  se is its standard error, so a bias smaller than se is "
+              "indistinguishable\n  from zero. flips counts Gaussians that land on "
+              f"opposite sides of the\n  densification threshold ({thr:g}) under the two "
+              "backwards -- the decision\n  the training loop actually takes, and the "
+              "only channel by which a gradient\n  difference could change the result.")
+        worst_p99 = 0.0
+        per_cfg = {}  # config tag -> signed relative difference, only for --bias-csv
         for cfg in triraster.configs():
             got_n = _norm(triraster.run_config(cfg, *bwd_args)[1])
             rel = ((got_n[live] - ref_n[live]) / ref_n[live]).double()
             a = rel.abs()
+            se = (rel.std() / math.sqrt(rel.numel())).item()
+            worst_p99 = max(worst_p99, torch.quantile(a, 0.99).item())
+            ref_hi, got_hi = ref_n > thr, got_n > thr
+            up = int((got_hi & ~ref_hi).sum())     # Triton would split, HIP would not
+            down = int((~got_hi & ref_hi).sum())   # and the reverse
             split = cfg.kwargs.get("SPLIT", 1)
-            print(f"  bias={rel.mean().item():+10.3e}  "
+            if args.bias_csv:
+                wpe = cfg.kwargs.get("waves_per_eu")
+                tag = f"s{split}_nw{cfg.num_warps}" + (f"_wpe{wpe}" if wpe else "")
+                per_cfg[tag] = rel.cpu()
+            print(f"  bias={rel.mean().item():+10.3e} se={se:9.3e}  "
                   f"median|d|={a.median().item():9.3e}  "
                   f"p99|d|={torch.quantile(a, 0.99).item():9.3e}  "
-                  f"max|d|={a.max().item():9.3e}   "
+                  f"max|d|={a.max().item():9.3e}  "
+                  f"flips={up + down:>4} (+{up}/-{down})   "
                   f"num_warps={cfg.num_warps} SPLIT={split} "
                   f"waves_per_eu={cfg.kwargs.get('waves_per_eu', '-')}", flush=True)
+        n_above = int((ref_n > thr).sum())
+        # A Gaussian can only flip if it sits within the perturbation of the threshold,
+        # so report that population: without it, flips=0 could just mean nothing was
+        # ever close enough to flip, which is a much weaker statement than it looks.
+        at_risk = int((live & ((ref_n - thr).abs() <= worst_p99 * thr)).sum())
+        print(f"\n  {n_above} of {n_live} live Gaussians are above the threshold under "
+              f"HIP.\n  {at_risk} lie within the worst p99 relative error ({worst_p99:.2e}) "
+              "of it, and\n  so were at risk of flipping at all. A flip count that is small "
+              "AND balanced\n  between + and - is the cleanest statement available: the "
+              "substitution moves\n  no Gaussian systematically. Read it against the "
+              "at-risk count, not alone.")
+
+        if args.bias_csv:
+            tags = list(per_cfg)
+            norms = ref_n[live].double().cpu()
+            with open(args.bias_csv, "w") as f:
+                # The threshold is in the header because the margin each Gaussian has to
+                # it -- not the error alone -- is what decides whether a flip is possible.
+                f.write(f"# threshold={thr:.6e} n_live={n_live} n_above={n_above}\n")
+                f.write("ref_norm," + ",".join(tags) + "\n")
+                # .tolist() once per column: indexing the tensors per element instead
+                # costs a second or two at this row count.
+                cols = [norms.tolist()] + [per_cfg[t].tolist() for t in tags]
+                for row in zip(*cols):
+                    f.write(f"{row[0]:.9e}," +
+                            ",".join(f"{v:.6e}" for v in row[1:]) + "\n")
+            print(f"\nwrote {len(norms)} rows x {len(tags)} configs to {args.bias_csv}")
 
     if args.verify_configs:
         from gsplat.cuda._wrapper import _make_lazy_cuda_func

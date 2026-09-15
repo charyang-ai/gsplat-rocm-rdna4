@@ -439,6 +439,7 @@ render on the R9700**.
 | `tests/run_simple_trainer.py` | Runs `examples/simple_trainer.py` with the tile size (and optionally triraster) forced from the environment, since the trainer has no flag for either |
 | `tests/ssim_bench_pipeline.py` | In-pipeline SSIM perf test (benchmarks the installed TriSSIM loss; baked into the image) |
 | `tests/ssim_bench_offline.py` | Offline, self-contained SSIM benchmark (5 inline variants; no TriSSIM/Docker needed) |
+| `tests/bench_table1.py` | Table 1 (`tab:coupling`): 5× mean of tile 8 vs 16 stage times (500K, 1080p, SH=3, 30 iters) |
 | `tests/profile_trainer.py` | torch.profiler harness: synthetic 3DGS step, kernels ranked by GPU time (`--ssim trissim\|baseline\|separable\|off`, default `trissim`; `--ras_bwd baseline\|triton`, default `baseline`; `--tile-size`, default 8) |
 | `assets/` | Training GIF + validation renders |
 
